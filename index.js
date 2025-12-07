@@ -3,8 +3,10 @@ const net = require('net');
 const tls = require('tls');
 const http = require('http');
 
+// A Render automatikusan beállítja a PORT környezeti változót
 const PORT = process.env.PORT || 3000;
 
+// Hozunk létre egy egyszerű HTTP szervert a WSS protokoll befogadásához
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Websocket Proxy is running.');
@@ -35,15 +37,16 @@ wss.on('connection', function connection(ws, req) {
                 console.log(`WS: Parancs érkezett: ${JSON.stringify(jsonMessage)}`);
 
                 if (port === 443) {
-                    // --- TLS / HTTPS KAPCSOLAT ---
+                    // --- TLS / HTTPS KAPCSOLAT KEZELÉSE ---
                     console.log(`Nyitás TLS (HTTPS) kapcsolaton: ${host}:${port}`);
                     
-                    // EZ A JAVÍTOTT RÉSZ! -------------------------------------
                     targetSocket = tls.connect({
                         port: port,
                         host: host,
+                        // JAVÍTÁS 1: Eltávolítja a 'self-signed certificate' hibát
                         rejectUnauthorized: false, 
-                        minVersion: 'TLSv1.2'       // <--- EZ A KRITIKUS SOR
+                        // JAVÍTÁS 2: Ez fixálja a 'handshake failure' hibát
+                        minVersion: 'TLSv1.2'      
                     }, () => {
                         // Sikeres kapcsolat esetén
                         isConnected = true;
@@ -53,7 +56,6 @@ wss.on('connection', function connection(ws, req) {
                         }
                         ws.send(JSON.stringify({ type: 'dns_response', status: 'ok' }));
                     });
-                    // -----------------------------------------------------------
 
                 } else {
                     // --- NEM TITKOSÍTOTT TCP / HTTP KAPCSOLAT ---
@@ -88,14 +90,17 @@ wss.on('connection', function connection(ws, req) {
                 });
 
             } else {
+                // Adat továbbítása
                 if (targetSocket && isConnected) {
                     targetSocket.write(message);
                 } else if (!isConnected) {
+                    // Csatlakozás előtt érkező adat pufferelése
                     bufferedData = message;
                 }
             }
             
         } catch (e) {
+            // Nem JSON üzenet (adat) kezelése a WS-en
             if (targetSocket && isConnected) {
                 targetSocket.write(message);
             } else if (!isConnected) {

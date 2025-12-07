@@ -4,25 +4,21 @@ const tls = require('tls');
 const constants = require('crypto').constants; // A TLS opciókhoz szükséges
 const url = require('url');
 
-// A környezeti változók (pl. Render) által beállított port használata
 const port = process.env.PORT || 8080; 
 
-// WebSocket szerver inicializálása
 const wss = new WebSocket.Server({ port });
 
 console.log(`WebSocket server listening on port ${port}`);
 
 wss.on('connection', function connection(ws, req) {
-    // Kiírja a logot, hogy új kapcsolat jött létre
     console.log(`--- Új Websocket kapcsolat létrejött. IP: ${req.socket.remoteAddress}`);
     
     let targetSocket = null;
     let isTls = false;
     
-    // Kezeli a WSS-en érkező parancsokat
     ws.on('message', function incoming(message) {
         if (targetSocket) {
-            // Ha már van nyitott socket, az üzeneteket továbbítjuk a célhosztnak
+            // ... adat továbbítás ...
             if (typeof message === 'string') {
                 targetSocket.write(message);
             } else {
@@ -49,25 +45,28 @@ wss.on('connection', function connection(ws, req) {
                 };
                 
                 // ====================================================================
-                // 💥 A KRITIKUS TLS JAVÍTÁS (csak 443-as portnál)
-                // Ez kényszeríti a Node.js-t, hogy csak modern, elfogadott titkosításokat kínáljon fel.
+                // 💥 A KRITIKUS JAVÍTÁSOK (csak 443-as portnál)
                 if (isTls) {
+                    // 1. SNI Fix: Kényszerítjük a Server Name Indication használatát (example.com hiba miatt)
+                    connectOptions.servername = targetHost; 
+                    
+                    // 2. TLS Szigorítás (SSL alert 40 hiba miatt)
                     connectOptions.secureOptions = constants.SSL_OP_NO_SSLv2 | 
                                                   constants.SSL_OP_NO_SSLv3 | 
                                                   constants.SSL_OP_NO_TLSv1 | 
                                                   constants.SSL_OP_NO_TLSv1_1;
                     connectOptions.minVersion = 'TLSv1.2';
-                    // Szigorú, modern titkosítási lista (fontos a telex.hu és tubitv.com miatt)
                     connectOptions.ciphers = 'TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256';
+
+                    // 3. Tanúsítvány Ellenőrzés Bypass (utolsó kísérlet a 40-es hiba megkerülésére)
+                    // FIGYELEM: Ez biztonsági kockázatot jelent!
+                    connectOptions.rejectUnauthorized = false;
                 }
                 // ====================================================================
 
-                // Kapcsolat felépítése (TLS-t használ HTTPS esetén)
                 const connector = isTls ? tls.connect : net.connect;
                 targetSocket = connector(connectOptions, () => {
                     console.log(`   ✅ Sikeresen csatlakozva a célhoszthoz.`);
-                    
-                    // Küldünk egy megerősítő választ a Python kliensnek
                     ws.send(JSON.stringify({ type: 'dns_response' }));
                 });
 
@@ -89,7 +88,6 @@ wss.on('connection', function connection(ws, req) {
                 targetSocket.on('error', (err) => {
                     console.error(`❌ TCP/TLS Socket hiba: ${err.message}`);
                     if (ws.readyState === WebSocket.OPEN) {
-                        // Visszaküldjük a hibaüzenetet a Python kliensnek
                         ws.send(JSON.stringify({ type: 'error', message: `TCP/TLS Hiba: ${err.message}` }));
                     }
                     ws.close();
@@ -111,7 +109,6 @@ wss.on('connection', function connection(ws, req) {
         }
     });
 
-    // Kezeli a WSS kapcsolat lezárását
     ws.on('close', () => {
         console.log('Websocket kapcsolat lezárult.');
         if (targetSocket && !targetSocket.destroyed) {
@@ -119,7 +116,6 @@ wss.on('connection', function connection(ws, req) {
         }
     });
 
-    // Kezeli a WSS hibákat
     ws.on('error', (err) => {
         console.error(`Websocket hiba: ${err.message}`);
         if (targetSocket && !targetSocket.destroyed) {

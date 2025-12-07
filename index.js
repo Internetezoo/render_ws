@@ -5,31 +5,25 @@ const http = require('http');
 
 const PORT = process.env.PORT || 3000;
 
-// Egy egyszerű HTTP szerver, amely fogadja a Websocket kapcsolatot
 const server = http.createServer((req, res) => {
-    // Általános HTTP válasz, ha valaki sima HTTP-vel próbálkozik
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Websocket Proxy is running.');
 });
 
-// Websocket szerver inicializálása
 const wss = new WebSocket.Server({ server });
 
 wss.on('connection', function connection(ws, req) {
     let targetSocket = null;
     let isConnected = false;
-    // Puffer a Websocket kapcsolat létrehozása előtt érkező adatoknak
     let bufferedData = null;
 
     console.log('\n--- Új Websocket kapcsolat létrejött.');
 
     ws.on('message', function incoming(message) {
         try {
-            // Megpróbáljuk JSON-ként értelmezni (ez a parancs)
             const jsonMessage = JSON.parse(message);
 
             if (jsonMessage.type === 'tcp' && !isConnected) {
-                // TCP Csatlakozási kérés (host és port)
                 const host = jsonMessage.host;
                 const port = jsonMessage.port;
 
@@ -44,12 +38,12 @@ wss.on('connection', function connection(ws, req) {
                     // --- TLS / HTTPS KAPCSOLAT ---
                     console.log(`Nyitás TLS (HTTPS) kapcsolaton: ${host}:${port}`);
                     
-                    // JAVÍTÁS: Két opció hozzáadva a TLS kapcsolatok hibáinak kezelésére.
+                    // EZ A JAVÍTOTT RÉSZ! -------------------------------------
                     targetSocket = tls.connect({
                         port: port,
                         host: host,
-                        rejectUnauthorized: false, // Megoldja a 'self-signed certificate' hibát
-                        minVersion: 'TLSv1.2'       // Megoldhatja a 'handshake failure' hibát
+                        rejectUnauthorized: false, 
+                        minVersion: 'TLSv1.2'       // <--- EZ A KRITIKUS SOR
                     }, () => {
                         // Sikeres kapcsolat esetén
                         isConnected = true;
@@ -57,9 +51,9 @@ wss.on('connection', function connection(ws, req) {
                             targetSocket.write(bufferedData);
                             bufferedData = null;
                         }
-                        // Megerősítés visszaküldése a Python kliensnek
                         ws.send(JSON.stringify({ type: 'dns_response', status: 'ok' }));
                     });
+                    // -----------------------------------------------------------
 
                 } else {
                     // --- NEM TITKOSÍTOTT TCP / HTTP KAPCSOLAT ---
@@ -78,7 +72,6 @@ wss.on('connection', function connection(ws, req) {
                 // --- CÉL SOCKET ESEMÉNYKEZELÉSE ---
                 
                 targetSocket.on('data', (data) => {
-                    // Adat küldése a Websocket kliensnek (Python Bridge)
                     console.log(`--- Adat érkezett a cél szervertől, méret: ${data.length}`);
                     ws.send(data);
                 });
@@ -91,26 +84,21 @@ wss.on('connection', function connection(ws, req) {
 
                 targetSocket.on('close', () => {
                     console.log('TCP/TLS kapcsolat lezárva a célhoszt felé.');
-                    // Tájékoztatjuk a Websocket klienst a kapcsolat lezárásáról
                     ws.close();
                 });
 
             } else {
-                // Nyert bináris adatok küldése a cél socket-nek
                 if (targetSocket && isConnected) {
                     targetSocket.write(message);
                 } else if (!isConnected) {
-                    // Pufferelés, ha a kapcsolat még nem jött létre
                     bufferedData = message;
                 }
             }
             
         } catch (e) {
-            // Ha nem JSON üzenet (ezek a nyers HTTP/HTTPS adatok)
             if (targetSocket && isConnected) {
                 targetSocket.write(message);
             } else if (!isConnected) {
-                // Pufferelés, ha a kapcsolat még nem jött létre
                 bufferedData = message;
             }
         }

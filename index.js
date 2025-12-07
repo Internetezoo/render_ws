@@ -1,87 +1,98 @@
 const WebSocket = require('ws');
 const net = require('net');
 const tls = require('tls');
-const http = require('http');
+const constants = require('crypto').constants; // A TLS opciókhoz szükséges
+const url = require('url');
 
-// A Render automatikusan beállítja a PORT környezeti változót
-const PORT = process.env.PORT || 3000;
+// A környezeti változók (pl. Render) által beállított port használata
+const port = process.env.PORT || 8080; 
 
-// Hozunk létre egy egyszerű HTTP szervert a WSS protokoll befogadásához
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Websocket Proxy is running.');
-});
+// WebSocket szerver inicializálása
+const wss = new WebSocket.Server({ port });
 
-const wss = new WebSocket.Server({ server });
+console.log(`WebSocket server listening on port ${port}`);
 
 wss.on('connection', function connection(ws, req) {
+    // Kiírja a logot, hogy új kapcsolat jött létre
+    console.log(`--- Új Websocket kapcsolat létrejött. IP: ${req.socket.remoteAddress}`);
+    
     let targetSocket = null;
-    let isConnected = false;
-    let bufferedData = null;
-
-    console.log('\n--- Új Websocket kapcsolat létrejött.');
-
+    let isTls = false;
+    
+    // Kezeli a WSS-en érkező parancsokat
     ws.on('message', function incoming(message) {
+        if (targetSocket) {
+            // Ha már van nyitott socket, az üzeneteket továbbítjuk a célhosztnak
+            if (typeof message === 'string') {
+                targetSocket.write(message);
+            } else {
+                targetSocket.write(message);
+            }
+            return;
+        }
+
         try {
-            const jsonMessage = JSON.parse(message);
-
-            if (jsonMessage.type === 'tcp' && !isConnected) {
-                const host = jsonMessage.host;
-                const port = jsonMessage.port;
-
-                if (!host || !port) {
-                    console.error('WS: Hiányzó host vagy port a TCP parancsban.');
-                    return;
-                }
-
-                console.log(`WS: Parancs érkezett: ${JSON.stringify(jsonMessage)}`);
-
-                if (port === 443) {
-                    // --- TLS / HTTPS KAPCSOLAT KEZELÉSE ---
-                    console.log(`Nyitás TLS (HTTPS) kapcsolaton: ${host}:${port}`);
-                    
-                    targetSocket = tls.connect({
-                        port: port,
-                        host: host,
-                        // JAVÍTÁS 1: Eltávolítja a 'self-signed certificate' hibát
-                        rejectUnauthorized: false, 
-                        // JAVÍTÁS 2: Ez fixálja a 'handshake failure' hibát
-                        minVersion: 'TLSv1.2'      
-                    }, () => {
-                        // Sikeres kapcsolat esetén
-                        isConnected = true;
-                        if (bufferedData) {
-                            targetSocket.write(bufferedData);
-                            bufferedData = null;
-                        }
-                        ws.send(JSON.stringify({ type: 'dns_response', status: 'ok' }));
-                    });
-
-                } else {
-                    // --- NEM TITKOSÍTOTT TCP / HTTP KAPCSOLAT ---
-                    console.log(`Nyitás NET (HTTP) kapcsolaton: ${host}:${port}`);
-                    
-                    targetSocket = net.connect(port, host, () => {
-                        isConnected = true;
-                        if (bufferedData) {
-                            targetSocket.write(bufferedData);
-                            bufferedData = null;
-                        }
-                        ws.send(JSON.stringify({ type: 'dns_response', status: 'ok' }));
-                    });
-                }
+            const command = JSON.parse(message.toString());
+            
+            if (command.type === 'tcp') {
+                const targetHost = command.host;
+                const targetPort = command.port;
                 
-                // --- CÉL SOCKET ESEMÉNYKEZELÉSE ---
+                isTls = targetPort === 443;
                 
-                targetSocket.on('data', (data) => {
-                    console.log(`--- Adat érkezett a cél szervertől, méret: ${data.length}`);
-                    ws.send(data);
+                console.log(`WS: Parancs érkezett: ${JSON.stringify(command)}`);
+                console.log(`Nyitás ${isTls ? 'TLS (HTTPS)' : 'TCP (HTTP)'} kapcsolaton: ${targetHost}:${targetPort}`);
+                
+                let connectOptions = {
+                    host: targetHost,
+                    port: targetPort,
+                };
+                
+                // ====================================================================
+                // 💥 A KRITIKUS TLS JAVÍTÁS (csak 443-as portnál)
+                // Ez kényszeríti a Node.js-t, hogy csak modern, elfogadott titkosításokat kínáljon fel.
+                if (isTls) {
+                    connectOptions.secureOptions = constants.SSL_OP_NO_SSLv2 | 
+                                                  constants.SSL_OP_NO_SSLv3 | 
+                                                  constants.SSL_OP_NO_TLSv1 | 
+                                                  constants.SSL_OP_NO_TLSv1_1;
+                    connectOptions.minVersion = 'TLSv1.2';
+                    // Szigorú, modern titkosítási lista (fontos a telex.hu és tubitv.com miatt)
+                    connectOptions.ciphers = 'TLS_AES_256_GCM_SHA384:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256';
+                }
+                // ====================================================================
+
+                // Kapcsolat felépítése (TLS-t használ HTTPS esetén)
+                const connector = isTls ? tls.connect : net.connect;
+                targetSocket = connector(connectOptions, () => {
+                    console.log(`   ✅ Sikeresen csatlakozva a célhoszthoz.`);
+                    
+                    // Küldünk egy megerősítő választ a Python kliensnek
+                    ws.send(JSON.stringify({ type: 'dns_response' }));
                 });
 
+                // --- Adat továbbítás Websocket --> Célhoszt ---
+                ws.on('message', (data) => {
+                    if (targetSocket && !targetSocket.destroyed) {
+                        targetSocket.write(data);
+                    }
+                });
+
+                // --- Adat továbbítás Célhoszt --> Websocket ---
+                targetSocket.on('data', (data) => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(data);
+                    }
+                });
+
+                // --- Hibakezelés ---
                 targetSocket.on('error', (err) => {
                     console.error(`❌ TCP/TLS Socket hiba: ${err.message}`);
-                    ws.send(JSON.stringify({ type: 'error', message: `TCP/TLS Hiba: ${err.message}` }));
-                    targetSocket.destroy();
+                    if (ws.readyState === WebSocket.OPEN) {
+                        // Visszaküldjük a hibaüzenetet a Python kliensnek
+                        ws.send(JSON.stringify({ type: 'error', message: `TCP/TLS Hiba: ${err.message}` }));
+                    }
+                    ws.close();
                 });
 
                 targetSocket.on('close', () => {
@@ -90,40 +101,29 @@ wss.on('connection', function connection(ws, req) {
                 });
 
             } else {
-                // Adat továbbítása
-                if (targetSocket && isConnected) {
-                    targetSocket.write(message);
-                } else if (!isConnected) {
-                    // Csatlakozás előtt érkező adat pufferelése
-                    bufferedData = message;
-                }
+                console.warn(`WS: Ismeretlen parancs típus: ${command.type}`);
             }
-            
+
         } catch (e) {
-            // Nem JSON üzenet (adat) kezelése a WS-en
-            if (targetSocket && isConnected) {
-                targetSocket.write(message);
-            } else if (!isConnected) {
-                bufferedData = message;
-            }
+            console.error(`WS: Hiba a parancs feldolgozásakor: ${e.message}`);
+            ws.send(JSON.stringify({ type: 'error', message: `Parancsfeldolgozási hiba: ${e.message}` }));
+            ws.close();
         }
     });
 
-    ws.on('close', function close() {
+    // Kezeli a WSS kapcsolat lezárását
+    ws.on('close', () => {
         console.log('Websocket kapcsolat lezárult.');
-        if (targetSocket) {
+        if (targetSocket && !targetSocket.destroyed) {
             targetSocket.destroy();
         }
     });
 
-    ws.on('error', function error(err) {
+    // Kezeli a WSS hibákat
+    ws.on('error', (err) => {
         console.error(`Websocket hiba: ${err.message}`);
-        if (targetSocket) {
+        if (targetSocket && !targetSocket.destroyed) {
             targetSocket.destroy();
         }
     });
-});
-
-server.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
 });

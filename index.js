@@ -1,120 +1,139 @@
-const dns = require('dns');
-const net = require("net");
-const http = require("http");
-const tls = require('tls'); // ÚJ: TLS/SSL támogatáshoz
-const WebSocketServer = require("ws").Server;
+const WebSocket = require('ws');
+const net = require('net');
+const tls = require('tls');
+const http = require('http');
 
-var port = process.env.PORT || process.env.VCAP_APP_PORT || 8090;
-var server = http.createServer();
+const PORT = process.env.PORT || 3000;
 
-server.on("request", (req, res) => {
-    // ... (HTTP válasz logika változatlan)
-    res.writeHead(200, { "Content-Type": "text/plain" });
-    res.end("WebSocket Proxy Server is Running\n");
+// Egy egyszerű HTTP szerver, amely fogadja a Websocket kapcsolatot
+const server = http.createServer((req, res) => {
+    // Általános HTTP válasz, ha valaki sima HTTP-vel próbálkozik
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Websocket Proxy is running.');
 });
 
-server.listen(port, () => {
-    console.log("http server listening on %d", port);
-});
+// Websocket szerver inicializálása
+const wss = new WebSocket.Server({ server });
 
-var wss = new WebSocketServer({ server: server });
+// Websocket kapcsolatonkénti adatpufferek tárolására
+const connectionData = new Map();
 
-wss.on("connection", function (ws) {
-    let client; // client deklarálása a kód elején
-    let addr; 
-    let is_connected = false;
+wss.on('connection', function connection(ws, req) {
+    let targetSocket = null;
+    let isConnected = false;
+    // Puffer a Websocket kapcsolat létrehozása előtt érkező adatoknak
+    let bufferedData = null;
 
-    // --- Eseménykezelők definiálása (függetlenül a net/tls-től) ---
+    console.log('\n--- Új Websocket kapcsolat létrejött.');
 
-    function setup_client_events() {
-        client.on("connect", function () {
-            is_connected = true;
-            if (addr && addr.ipv4) {
-                 ws.send(addr.ipv4);
-            }
-        });
+    ws.on('message', function incoming(message) {
+        try {
+            // Megpróbáljuk JSON-ként értelmezni (ez a parancs)
+            const jsonMessage = JSON.parse(message);
 
-        client.on("error", function (ex) {
-            console.log("❌ TCP/TLS Socket hiba: " + ex.message);
-            if (ws.readyState == ws.OPEN) ws.close();
-        });
+            if (jsonMessage.type === 'tcp' && !isConnected) {
+                // TCP Csatlakozási kérés (host és port)
+                const host = jsonMessage.host;
+                const port = jsonMessage.port;
 
-        client.on("data", function (data) {
-            console.log("--- Adat érkezett a cél szervertől, méret:", data.length); 
-            if (ws.readyState == ws.OPEN) {
-                // Fontos: a tls/net modulok bináris bájtokat adnak át, ezt küldjük tovább
-                ws.send(data); 
-            }
-        });
+                if (!host || !port) {
+                    console.error('WS: Hiányzó host vagy port a TCP parancsban.');
+                    return;
+                }
 
-        client.on("close", function () {
-            console.log("TCP/TLS kapcsolat lezárva a célhoszt felé.");
-            if (ws.readyState == ws.OPEN) ws.close();
-        });
-    }
+                console.log(`WS: Parancs érkezett: ${JSON.stringify(jsonMessage)}`);
 
-    // --- Websocket Üzenetkezelő ---
-
-    ws.on("message", function incoming(message, isBinary) {
-        
-        if (isBinary == true) {
-            // BINÁRIS ADAT: A nyers HTTP/HTTPS kérés. Továbbítjuk a célhoszt felé.
-            if (client && is_connected) {
-                client.write(message);
-            } else {
-                console.log("⚠️ Próbálkozás bináris küldéssel, de a client nincs csatlakoztatva.");
-            }
-        }
-        
-        if (isBinary == false) {
-            // STRING ADAT: Ez a JSON parancs a TCP kapcsolat nyitására.
-            console.log("WS: Parancs érkezett: " + message);
-            
-            try {
-                addr = JSON.parse(message);
-            } catch (e) {
-                console.error("JSON parse hiba:", e.message);
-                return ws.close();
-            }
-
-            if (addr.type == "tcp") {
-                dns.lookup(addr.host, 4, (err, address, family) => {
-                    if (err) {
-                        console.error("DNS feloldási hiba:", err.message);
-                        return ws.close();
-                    }
+                if (port === 443) {
+                    // --- TLS / HTTPS KAPCSOLAT ---
+                    console.log(`Nyitás TLS (HTTPS) kapcsolaton: ${host}:${port}`);
                     
-                    addr.ipv4 = address;
+                    // JAVÍTÁS: A self-signed certificate és handshake failure hibák
+                    // elkerülésére hozzáadjuk a rejectUnauthorized: false opciót.
+                    targetSocket = tls.connect({
+                        port: port,
+                        host: host,
+                        rejectUnauthorized: false // <--- JAVÍTVA
+                    }, () => {
+                        // Sikeres kapcsolat esetén
+                        isConnected = true;
+                        if (bufferedData) {
+                            targetSocket.write(bufferedData);
+                            bufferedData = null;
+                        }
+                        // Megerősítés visszaküldése a Python kliensnek
+                        ws.send(JSON.stringify({ type: 'dns_response', status: 'ok' }));
+                    });
 
-                    // *** FONTOS LOGIKA: VÁLASZTÁS NET ÉS TLS KÖZÖTT ***
-                    if (addr.port == 443) {
-                        // HTTPS kérés: TLS kapcsolatot nyitunk
-                        console.log(`Nyitás TLS (HTTPS) kapcsolaton: ${addr.host}:${addr.port}`);
-                        client = tls.connect(addr.port, addr.ipv4, { 
-                            // Ez megakadályozza a szigorú SSL tanúsítvány ellenőrzést, 
-                            // ami néha gondot okozhat felhőkörnyezetben.
-                            checkServerIdentity: () => undefined 
-                        });
-                    } else {
-                        // HTTP kérés: Net kapcsolatot nyitunk
-                        console.log(`Nyitás NET (HTTP) kapcsolaton: ${addr.host}:${addr.port}`);
-                        client = new net.Socket();
-                        client.connect(addr.port, addr.ipv4);
-                    }
+                } else {
+                    // --- NEM TITKOSÍTOTT TCP / HTTP KAPCSOLAT ---
+                    console.log(`Nyitás NET (HTTP) kapcsolaton: ${host}:${port}`);
                     
-                    // Csatoljuk az eseménykezelőket az új client objektumhoz
-                    setup_client_events();
+                    targetSocket = net.connect(port, host, () => {
+                        isConnected = true;
+                        if (bufferedData) {
+                            targetSocket.write(bufferedData);
+                            bufferedData = null;
+                        }
+                        ws.send(JSON.stringify({ type: 'dns_response', status: 'ok' }));
+                    });
+                }
+                
+                // --- CÉL SOCKET ESEMÉNYKEZELÉSE ---
+                
+                targetSocket.on('data', (data) => {
+                    // Adat küldése a Websocket kliensnek (Python Bridge)
+                    console.log(`--- Adat érkezett a cél szervertől, méret: ${data.length}`);
+                    ws.send(data);
                 });
+
+                targetSocket.on('error', (err) => {
+                    console.error(`❌ TCP/TLS Socket hiba: ${err.message}`);
+                    ws.send(JSON.stringify({ type: 'error', message: `TCP/TLS Hiba: ${err.message}` }));
+                    targetSocket.destroy();
+                });
+
+                targetSocket.on('close', () => {
+                    console.log('TCP/TLS kapcsolat lezárva a célhoszt felé.');
+                    // Tájékoztatjuk a Websocket klienst a kapcsolat lezárásáról
+                    ws.close();
+                });
+
+            } else {
+                // Nyert bináris adatok küldése a cél socket-nek
+                if (targetSocket && isConnected) {
+                    targetSocket.write(message);
+                } else if (!isConnected) {
+                    // Pufferelés, ha a kapcsolat még nem jött létre
+                    bufferedData = message;
+                }
+            }
+            
+        } catch (e) {
+            // Ha nem JSON üzenet (ezek a nyers HTTP/HTTPS adatok)
+            if (targetSocket && isConnected) {
+                targetSocket.write(message);
+            } else if (!isConnected) {
+                // Pufferelés, ha a kapcsolat még nem jött létre
+                bufferedData = message;
             }
         }
     });
 
-    ws.on("close", function () {
-        console.log("Websocket kapcsolat lezárult.");
-        if (client) client.destroy();
+    ws.on('close', function close() {
+        console.log('Websocket kapcsolat lezárult.');
+        if (targetSocket) {
+            targetSocket.destroy();
+        }
     });
 
-    ws.on("error", function (ex) {
-        console.log("❌ Websocket hiba: " + ex.message);
+    ws.on('error', function error(err) {
+        console.error(`Websocket hiba: ${err.message}`);
+        if (targetSocket) {
+            targetSocket.destroy();
+        }
     });
+});
+
+server.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
 });

@@ -1,0 +1,22 @@
+{
+  "name": "render-websocket-proxy",
+  "version": "1.0.0",
+  "description": "Websocket over TCP proxy for cloud platforms like Render.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "websocket",
+    "proxy",
+    "tcp",
+    "render"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@types/node": "^18.0.6",
+    "node-fetch": "^3.2.6",
+    "ws": "^8.11.0"
+  }
+}

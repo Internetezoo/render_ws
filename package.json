@@ -4,7 +4,7 @@
   "description": "Websocket over TCP/TLS proxy bridge for cloud platforms (supporting HTTPS via TLS).",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node --tls-min-v1.2 --no-ssl3-methods --no-tls1-1-methods --no-tls1-methods index.js"
   },
   "keywords": [
     "websocket",

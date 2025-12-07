@@ -1,7 +1,7 @@
 {
-  "name": "render-websocket-proxy",
-  "version": "1.0.0",
-  "description": "Websocket over TCP proxy for cloud platforms like Render.",
+  "name": "render-wss-tls-proxy",
+  "version": "1.0.1",
+  "description": "Websocket over TCP/TLS proxy bridge for cloud platforms (supporting HTTPS via TLS).",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -9,8 +9,9 @@
   "keywords": [
     "websocket",
     "proxy",
-    "tcp",
-    "render"
+    "tls",
+    "render",
+    "socks"
   ],
   "author": "",
   "license": "ISC",

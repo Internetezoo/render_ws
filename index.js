@@ -15,9 +15,6 @@ const server = http.createServer((req, res) => {
 // Websocket szerver inicializálása
 const wss = new WebSocket.Server({ server });
 
-// Websocket kapcsolatonkénti adatpufferek tárolására
-const connectionData = new Map();
-
 wss.on('connection', function connection(ws, req) {
     let targetSocket = null;
     let isConnected = false;
@@ -47,12 +44,12 @@ wss.on('connection', function connection(ws, req) {
                     // --- TLS / HTTPS KAPCSOLAT ---
                     console.log(`Nyitás TLS (HTTPS) kapcsolaton: ${host}:${port}`);
                     
-                    // JAVÍTÁS: A self-signed certificate és handshake failure hibák
-                    // elkerülésére hozzáadjuk a rejectUnauthorized: false opciót.
+                    // JAVÍTÁS: Két opció hozzáadva a TLS kapcsolatok hibáinak kezelésére.
                     targetSocket = tls.connect({
                         port: port,
                         host: host,
-                        rejectUnauthorized: false // <--- JAVÍTVA
+                        rejectUnauthorized: false, // Megoldja a 'self-signed certificate' hibát
+                        minVersion: 'TLSv1.2'       // Megoldhatja a 'handshake failure' hibát
                     }, () => {
                         // Sikeres kapcsolat esetén
                         isConnected = true;
